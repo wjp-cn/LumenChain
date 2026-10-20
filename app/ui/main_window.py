@@ -7,6 +7,7 @@ from app.models.profile import Application, Profile, now
 from app.core.scheduler import Scheduler
 from app.ui.application_dialog import ApplicationDialog
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.batch_dialog import BatchApplicationDialog
 
 class Bridge(QObject):
     event=Signal(str,str,str)
@@ -263,24 +264,57 @@ class MainWindow(QMainWindow):
         self.bridge=Bridge(); self.bridge.event.connect(self.on_scheduler_event); self.scheduler=Scheduler(self.bridge.event.emit); self.thread=None; self.exiting=False; self.pending=False; self.pending_token=0
         self.setWindowIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root)
-        sidebar=QVBoxLayout(); outer.addLayout(sidebar,1); sidebar.addWidget(QLabel("光启 LumenChain\n一次编排，一键启动。")); self.profiles=QListWidget(); sidebar.addWidget(self.profiles)
+        sidebar=QVBoxLayout(); outer.addLayout(sidebar,1); sidebar.addWidget(QLabel("光启 LumenChain\n一次编排，一键启动。"))
+        sidebar.addSpacing(12)
+        section=QHBoxLayout(); sidebar.addLayout(section)
+        self.profile_heading=QLabel("启动方案"); self.profile_heading.setObjectName("profileHeading"); section.addWidget(self.profile_heading)
+        section.addStretch(); self.profile_count=QLabel(); self.profile_count.setObjectName("profileCount"); section.addWidget(self.profile_count)
+        self.profile_hint=QLabel("右键方案名称进行管理"); self.profile_hint.setObjectName("profileHint"); sidebar.addWidget(self.profile_hint)
+        self.profiles=QListWidget(); sidebar.addWidget(self.profiles)
+        self.profiles.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.profiles.customContextMenuRequested.connect(self.profile_menu)
+        self.profiles.setToolTip("右键方案名称，可修改名称和描述、复制、设为默认或删除。")
         self.profiles.currentRowChanged.connect(self.render)
-        for label,fn in (("＋ 新建方案",self.new_profile),("设置",self.settings)):
-            b=QPushButton(label); b.clicked.connect(fn); sidebar.addWidget(b)
-        work=QVBoxLayout(); outer.addLayout(work,4); self.title=QLabel(); self.title.setObjectName("title"); work.addWidget(self.title); self.description=QLabel(); work.addWidget(self.description)
-        row=QHBoxLayout(); work.addLayout(row)
-        for label,fn in (("添加软件",self.add_app),("方案操作",self.profile_menu),("数据管理",self.data_menu)):
-            b=QPushButton(label); b.clicked.connect(fn); row.addWidget(b)
+        new_button=QPushButton("＋ 新建方案"); new_button.clicked.connect(self.new_profile); sidebar.addWidget(new_button)
+        work=QVBoxLayout(); outer.addLayout(work,4)
+        header=QHBoxLayout(); work.addLayout(header); heading=QVBoxLayout(); header.addLayout(heading,1)
+        self.title=QLabel(); self.title.setObjectName("title"); heading.addWidget(self.title)
+        self.description=QLabel(); self.description.setWordWrap(True); heading.addWidget(self.description)
+        self.batch_button=QPushButton("批量管理"); self.batch_button.setObjectName("batchButton"); self.batch_button.clicked.connect(self.batch_manage); header.addWidget(self.batch_button,0,Qt.AlignTop)
+        self.add_button=QPushButton("＋ 添加软件"); self.add_button.clicked.connect(self.add_app); header.addWidget(self.add_button,0,Qt.AlignTop)
         self.apps=ApplicationList(); self.apps.setDragDropMode(QAbstractItemView.DragDrop); self.apps.setDefaultDropAction(Qt.MoveAction); self.apps.setDropIndicatorShown(False); self.apps.filesDropped.connect(self.add_dropped_apps); self.apps.reordered.connect(self.reorder); self.apps.itemDoubleClicked.connect(lambda _:self.edit_app()); self.apps.setContextMenuPolicy(Qt.CustomContextMenu); self.apps.customContextMenuRequested.connect(self.app_menu); work.addWidget(self.apps)
         self.apps.setToolTip("将桌面或资源管理器中的 EXE、LNK、BAT、CMD 拖入此处添加；列表内拖动可调整顺序。")
         self.apps.moveRequested.connect(self.move_application)
-        self.status=QLabel("创建方案并添加软件，即可一键启动。"); self.status.setWordWrap(True); work.addWidget(self.status); self.progress=QProgressBar(); self.progress.setRange(0,1); self.progress.setValue(0); work.addWidget(self.progress)
+        self._run_state="idle"
+        self.status=QLabel(); self.status.setWordWrap(True); work.addWidget(self.status); self.progress=QProgressBar(); self.progress.setRange(0,1); self.progress.setValue(0); self.progress.setFormat("已处理 %v / %m 项"); self.progress.setAccessibleName("当前启动流程进度"); self.progress.hide(); work.addWidget(self.progress)
         buttons=QHBoxLayout(); work.addLayout(buttons)
-        for label,fn in (("一键启动",lambda:self.start(self.selected())),("停止启动",self.cancel),("查看日志",self.logs)):
-            b=QPushButton(label); b.clicked.connect(fn); buttons.addWidget(b)
+        buttons.addStretch()
+        self.stop_button=QPushButton("停止启动"); self.stop_button.setObjectName("stopButton"); self.stop_button.clicked.connect(self.cancel); self.stop_button.hide(); buttons.addWidget(self.stop_button)
+        self.launch_button=QPushButton("一键启动"); self.launch_button.setMinimumWidth(150); self.launch_button.clicked.connect(lambda:self.start(self.selected())); buttons.addWidget(self.launch_button)
+        self.setup_menus()
         self.tray=QSystemTrayIcon(self.windowIcon(),self); self.tray.activated.connect(lambda reason:self.reveal() if reason in (QSystemTrayIcon.DoubleClick,QSystemTrayIcon.Trigger) else None)
         self.tray.setToolTip("光启 LumenChain"); self.tray.show(); self.refresh(); self.theme()
         QApplication.styleHints().colorSchemeChanged.connect(lambda _:self.theme())
+
+    def setup_menus(self):
+        bar=self.menuBar(); bar.setNativeMenuBar(False)
+        self.tools_menu=bar.addMenu("工具")
+        self.tools_menu.addAction("设置…",lambda:self.settings())
+        self.tools_menu.addAction("查看日志…",lambda:self.logs())
+        self.tools_menu.addSeparator()
+        self.tools_menu.addMenu(self.build_data_menu())
+        self.tools_menu.addSeparator()
+        self.tools_menu.addAction("退出",self.quit)
+
+    def sync_launch_controls(self):
+        busy=self.pending or self._run_state in ("running","stopping")
+        self.stop_button.setVisible(busy)
+        self.stop_button.setEnabled(self._run_state!="stopping")
+        self.stop_button.setText("正在停止…" if self._run_state=="stopping" else ("取消倒计时" if self.pending else "停止启动"))
+        self.launch_button.setText("等待启动…" if self.pending else ("启动中…" if busy else "一键启动"))
+        profile=self.selected()
+        self.batch_button.setEnabled(profile is not None and bool(profile.applications))
+        self.launch_button.setEnabled(not busy and profile is not None and any(a.enabled for a in profile.applications))
     def selected(self):
         row=self.profiles.currentRow(); return self.config.profiles[row] if 0<=row<len(self.config.profiles) else None
     def save(self):
@@ -289,7 +323,12 @@ class MainWindow(QMainWindow):
     def refresh(self,selected=None):
         selected=selected or (self.selected().id if self.selected() else None)
         self.profiles.blockSignals(True); self.profiles.clear()
-        for p in self.config.profiles: self.profiles.addItem(p.name)
+        for p in self.config.profiles:
+            item=QListWidgetItem(p.name)
+            item.setData(Qt.UserRole,p.id)
+            item.setToolTip(p.name+("\n"+p.description if p.description else "")+"\n右键管理方案")
+            self.profiles.addItem(item)
+        self.profile_count.setText(f"{len(self.config.profiles)} 个")
         index=next((i for i,p in enumerate(self.config.profiles) if p.id==selected),0)
         self.profiles.setCurrentRow(index); self.profiles.blockSignals(False); self.render(); self.tray_menu()
     def render(self,*_):
@@ -305,17 +344,47 @@ class MainWindow(QMainWindow):
                 item.setIcon(QFileIconProvider().icon(QFileInfo(a.path))); self.apps.addItem(item)
             if not p.applications: self.description.setText("将应用图标拖入下方列表，或点击“添加软件”；支持 EXE、LNK、BAT、CMD。")
         self.apps.sync_row_buttons()
+        self.sync_launch_controls()
+        if self._run_state=="idle" and not self.pending:
+            enabled=sum(a.enabled for a in p.applications) if p else 0
+            if not p:
+                self.status.setText("尚未开始 · 创建启动方案并添加软件。")
+            elif not enabled:
+                self.status.setText("尚未开始 · 请先添加或启用需要启动的软件。")
+            else:
+                self.status.setText(f"准备就绪 · {enabled} 个软件待启动，点击“一键启动”开始。")
     def new_profile(self):
         name,ok=QInputDialog.getText(self,"新建方案","方案名称")
         if ok and name.strip():
             p=Profile(name.strip()); self.config.profiles.append(p); self.save(); self.refresh(p.id)
-    def profile_menu(self):
-        p=self.selected()
-        if not p:return
+    def build_profile_menu(self,identifier):
         menu=QMenu(self)
-        for text,fn in (("修改名称和描述",self.rename),("复制方案",self.clone),("设为默认方案",self.set_default),("删除方案",self.delete_profile)):
-            menu.addAction(text,fn)
-        menu.exec(self.cursor().pos())
+        for label,method in (("修改名称和描述…","rename"),("复制当前方案","clone"),("设为默认方案","set_default"),("删除当前方案…","delete_profile")):
+            if method=="delete_profile":
+                menu.addSeparator()
+            action=menu.addAction(label,lambda checked=False,method=method:self.profile_action(identifier,method))
+            if method=="set_default":
+                action.setCheckable(True)
+                action.setChecked(self.config.settings["default_profile"]==identifier)
+        return menu
+
+    def profile_action(self,identifier,method):
+        row=next((i for i,p in enumerate(self.config.profiles) if p.id==identifier),None)
+        if row is None:
+            return
+        self.profiles.setCurrentRow(row)
+        getattr(self,method)()
+
+    def profile_menu(self,pos):
+        item=self.profiles.itemAt(pos)
+        if item is None:
+            return
+        self.profiles.setCurrentItem(item)
+        menu=self.build_profile_menu(item.data(Qt.UserRole))
+        try:
+            menu.exec(self.profiles.viewport().mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
     def rename(self):
         p=self.selected(); name,ok=QInputDialog.getText(self,"重命名方案","名称",text=p.name)
         if ok and name.strip():
@@ -441,18 +510,63 @@ class MainWindow(QMainWindow):
     def delete_app(self):
         a=self.app()
         if a and self.confirm("删除软件“"+a.name+"”？"):self.selected().applications.remove(a);self.save();self.render()
+
+    def batch_manage(self):
+        profile=self.selected()
+        if profile is not None and profile.applications:
+            BatchApplicationDialog(self,profile,self.remove_application_ids).exec()
+
+    def remove_application_ids(self,profile_id,identifiers):
+        profile=next((p for p in self.config.profiles if p.id==profile_id),None)
+        if profile is None:
+            return False
+        removed=set(identifiers)
+        previous=profile.applications
+        remaining=[application for application in previous if application.id not in removed]
+        if len(remaining)==len(previous):
+            return False
+        modified=profile.modified_at
+        profile.applications=remaining; profile.modified_at=now()
+        if not self.save():
+            profile.applications=previous; profile.modified_at=modified
+            return False
+        self.render()
+        self.status.setText(f"已从方案“{profile.name}”移除 {len(previous)-len(remaining)} 个程序。"+("当前启动仍使用原有快照，修改下次生效。" if self.scheduler.active is not None else "程序文件和运行状态未改变。"))
+        return True
     def start(self,profile,scheduled=False):
         if not profile:self.status.setText("请先选择有效方案。");self.reveal();return
         if self.pending and not scheduled:self.status.setText("开机方案已在倒计时，点击停止启动可取消。");self.reveal();return
         if self.thread and self.thread.is_alive():self.status.setText("当前已有方案正在启动，请查看当前进度。");self.reveal();return
+        if not any(a.enabled for a in profile.applications):
+            self.status.setText("当前方案没有已启用的软件，请先添加或启用。")
+            return
         snapshot=self.scheduler.reserve(profile)
         if snapshot is None:self.status.setText("当前已有方案正在启动。");self.reveal();return
         self.progress.setRange(0,max(1,sum(a.enabled for a in snapshot.applications)));self.progress.setValue(0)
+        self._run_state="running"
+        self.progress.show()
+        self.sync_launch_controls()
         self.status.setText("正在启动："+snapshot.name+"；编辑仅在下次启动生效。")
         self.thread=threading.Thread(target=self.scheduler.run,args=(snapshot,),daemon=False);self.thread.start()
-    def cancel(self):self.pending=False;self.pending_token+=1;self.scheduler.cancel();self.status.setText("已请求停止；已启动的软件保持运行。")
+    def cancel(self):
+        if not self.pending and self._run_state not in ("running","stopping"):
+            return
+        pending=self.pending
+        self.pending=False;self.pending_token+=1;self.scheduler.cancel()
+        if pending:
+            self._run_state="finished"
+            self.progress.hide()
+            self.status.setText("已取消开机启动倒计时。")
+        else:
+            self._run_state="stopping"
+            self.status.setText("正在停止启动流程；已启动的软件保持运行。")
+        self.sync_launch_controls()
     def on_scheduler_event(self,kind,identifier,text):
         if kind in ("countdown","finished"):self.status.setText(text)
+        if kind=="finished":
+            self._run_state="finished"
+            self.progress.hide()
+            self.sync_launch_controls()
         elif kind=="state":
             self.status.setText(text)
             for i in range(self.apps.count()):
@@ -490,10 +604,16 @@ class MainWindow(QMainWindow):
         dark=self.config.settings["theme"]=="dark" or (self.config.settings["theme"]=="system" and QApplication.styleHints().colorScheme()==Qt.ColorScheme.Dark)
         bg,card,fg,border=("#191c22","#252a33","#eef2f9","#414955") if dark else ("#f3f5f9","#ffffff","#202b3b","#dce2ec")
         self.setStyleSheet(f"QWidget {{font-family:'Microsoft YaHei','Segoe UI';font-size:13px;color:{fg};}} QMainWindow,QDialog {{background:{bg};}} QListWidget,QLineEdit,QSpinBox,QDoubleSpinBox,QComboBox,QTextEdit {{background:{card};border:1px solid {border};border-radius:7px;padding:7px;}} QListWidget::item {{padding:12px;border-bottom:1px solid {border};}} QListWidget::item:selected {{background:#d4e5ff;color:#132e52;}} QPushButton {{background:#246bce;color:white;border:0;border-radius:6px;padding:9px 15px;}} QPushButton:hover {{background:#3980e5;}} QLabel#title {{font-size:25px;font-weight:600;}} QProgressBar {{border:1px solid {border};border-radius:5px;text-align:center;}} QProgressBar::chunk {{background:#357bda;}}")
-    def data_menu(self):
-        m=QMenu(self)
+        self.setStyleSheet(self.styleSheet()+f"QMenuBar {{background:{bg};padding:3px 8px;border-bottom:1px solid {border};}} QMenuBar::item {{padding:6px 12px;background:transparent;border-radius:4px;}} QMenuBar::item:selected,QMenu::item:selected {{background:#d4e5ff;color:#132e52;}} QMenu {{background:{card};border:1px solid {border};padding:5px;}} QMenu::item {{padding:7px 28px 7px 15px;}} QMenu::item:disabled {{color:#8792a2;}} QMenu::separator {{height:1px;background:{border};margin:5px 8px;}} QPushButton:disabled {{background:{border};color:#8792a2;}} QPushButton#stopButton {{background:transparent;color:#bf5151;border:1px solid #bf7777;}} QPushButton#stopButton:hover {{background:#fbe9e9;color:#923333;}} QPushButton#stopButton:disabled {{color:#8792a2;border-color:{border};background:transparent;}}")
+        self.setStyleSheet(self.styleSheet()+f"QLabel#profileHeading {{font-size:16px;font-weight:600;}} QLabel#profileHint {{font-size:12px;color:#8792a2;padding-bottom:3px;}} QLabel#profileCount {{font-size:12px;color:#8792a2;background:{card};border:1px solid {border};border-radius:8px;padding:2px 7px;}}")
+        self.setStyleSheet(self.styleSheet()+f"QPushButton#batchButton {{background:transparent;color:{fg};border:1px solid {border};}} QPushButton#batchButton:hover {{background:{card};}} QPushButton#batchButton:disabled {{color:#8792a2;}}")
+    def build_data_menu(self):
+        m=QMenu("数据管理",self)
         for text,fn in (("导入方案",self.import_data),("导出方案",self.export_data),("打开配置目录",lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.config.root)))),("打开日志目录",lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.config.root/"logs"))))):m.addAction(text,fn)
-        m.exec(self.cursor().pos())
+        return m
+
+    def data_menu(self):
+        self.build_data_menu().exec(self.cursor().pos())
     def export_data(self):
         path,_=QFileDialog.getSaveFileName(self,"导出方案","LaunchFlow-profiles.json","JSON (*.json)")
         if path:

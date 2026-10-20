@@ -262,3 +262,186 @@ def test_arrow_single_item_disabled_and_save_failure_rolls_back(window,qt,monkey
     window.apps._row_buttons[identifier][1].click();qt.processEvents()
     assert [a.id for a in window.selected().applications]==before
     assert window.apps.item(0).data(Qt.UserRole)==identifier
+
+def test_idle_hides_progress_and_shows_ready_hint(window,qt):
+    assert window.progress.isHidden()
+    assert '准备就绪' in window.status.text()
+    window.profiles.setCurrentRow(1);qt.processEvents()
+    assert window.progress.isHidden() and '请先添加或启用' in window.status.text()
+    window.start(window.selected())
+    assert window.scheduler.active is None and window.thread is None
+    assert window.progress.isHidden()
+
+
+def test_running_progress_and_finished_summary(window,qt):
+    from app.core.launcher import Target
+    window.scheduler.resolve=lambda a:Target(a.path)
+    window.scheduler.monitor=lambda **k:([],False)
+    window.scheduler.launch=lambda t:None
+    window.selected().applications[0].delay_seconds=.15
+    window.start(window.selected())
+    assert not window.progress.isHidden()
+    assert window.progress.format()=='已处理 %v / %m 项'
+    deadline=time.monotonic()+2
+    while window._run_state=='running' and time.monotonic()<deadline:
+        qt.processEvents();time.sleep(.005)
+    assert window.progress.isHidden() and window._run_state=='finished'
+    assert '启动流程完成' in window.status.text()
+
+
+def test_pending_cancel_has_no_percentage(window):
+    window.pending=True
+    window.cancel()
+    assert window.progress.isHidden() and not window.pending
+    assert '已取消开机启动倒计时' in window.status.text()
+
+def test_tools_menu_routes_and_sidebar_heading(window,qt,monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+    assert [a.text() for a in window.menuBar().actions()]==['工具']
+    buttons=[b.text() for b in window.findChildren(QPushButton)]
+    assert '设置' not in buttons and '查看日志' not in buttons and '数据管理' not in buttons and '方案操作' not in buttons
+    called=[]
+    monkeypatch.setattr(window,'settings',lambda:called.append('settings'))
+    monkeypatch.setattr(window,'logs',lambda:called.append('logs'))
+    for name in ('设置…','查看日志…'):
+        next(a for a in window.tools_menu.actions() if a.text()==name).trigger()
+    assert called==['settings','logs']
+    data=next(a.menu() for a in window.tools_menu.actions() if a.text()=='数据管理')
+    assert {'导入方案','导出方案','打开配置目录','打开日志目录'}=={a.text() for a in data.actions()}
+    assert window.profile_heading.text()=='启动方案'
+    assert window.profile_hint.text()=='右键方案名称进行管理'
+    assert window.profile_count.text()=='2 个'
+    window.config.profiles=[];window.refresh();qt.processEvents()
+    assert window.profile_count.text()=='0 个'
+    assert not window.launch_button.isEnabled()
+
+
+def test_stop_button_only_visible_when_running_or_pending(window,qt):
+    from app.core.launcher import Target
+    assert window.stop_button.isHidden() and window.launch_button.isEnabled()
+    window.pending=True;window.sync_launch_controls()
+    assert not window.stop_button.isHidden() and window.stop_button.text()=='取消倒计时'
+    assert not window.launch_button.isEnabled()
+    window.stop_button.click()
+    assert window.stop_button.isHidden() and window.launch_button.isEnabled()
+    window.scheduler.resolve=lambda a:Target(a.path)
+    window.scheduler.monitor=lambda **k:([],False)
+    window.scheduler.launch=lambda t:None
+    window.selected().applications[0].delay_seconds=2
+    window.start(window.selected())
+    assert not window.stop_button.isHidden() and window.stop_button.text()=='停止启动'
+    assert not window.launch_button.isEnabled()
+    window.stop_button.click()
+    assert not window.stop_button.isEnabled()
+    deadline=time.monotonic()+2
+    while window._run_state!='finished' and time.monotonic()<deadline:qt.processEvents();time.sleep(.005)
+    assert window.stop_button.isHidden() and window.launch_button.isEnabled()
+
+@pytest.mark.parametrize('action',['修改名称和描述…','复制当前方案','设为默认方案','删除当前方案…'])
+def test_profile_context_actions_target_right_clicked_row(window,qt,monkeypatch,action):
+    from PySide6.QtWidgets import QMenu,QInputDialog
+    window.profiles.setCurrentRow(0);qt.processEvents()
+    original_id=window.config.profiles[0].id
+    target_id=window.config.profiles[1].id
+    names=iter(['新办公方案','办公工具描述'])
+    from types import SimpleNamespace
+    monkeypatch.setattr('app.ui.main_window.QInputDialog',SimpleNamespace(getText=lambda *a,**kw:(next(names),True)))
+    confirmations=[]
+    monkeypatch.setattr(window,'confirm',lambda text:confirmations.append(text) or True)
+    def choose(menu,*args):
+        assert window.selected().id==target_id
+        assert [a.text() for a in menu.actions() if not a.isSeparator()]==['修改名称和描述…','复制当前方案','设为默认方案','删除当前方案…']
+        next(a for a in menu.actions() if a.text()==action).trigger()
+    class TestMenu(QMenu):
+        def exec(self,*args):return choose(self,*args)
+    monkeypatch.setattr('app.ui.main_window.QMenu',TestMenu)
+    window.profile_menu(window.profiles.visualItemRect(window.profiles.item(1)).center())
+    restored=ConfigService(window.config.root)
+    assert restored.profiles[0].id==original_id and restored.profiles[0].name=='开发环境'
+    if action=='修改名称和描述…':
+        assert restored.profiles[1].name=='新办公方案' and restored.profiles[1].description=='办公工具描述'
+    elif action=='复制当前方案':
+        assert len(restored.profiles)==3 and restored.profiles[2].name=='日常办公 副本'
+        assert restored.profiles[2].id!=target_id
+    elif action=='设为默认方案':
+        assert restored.settings['default_profile']==target_id
+        default=next(a for a in window.build_profile_menu(target_id).actions() if a.text()=='设为默认方案')
+        assert default.isChecked()
+    else:
+        assert confirmations and len(restored.profiles)==1
+
+
+def test_profile_context_blank_space_and_delete_cancel(window,qt,monkeypatch):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QMenu
+    called=[];monkeypatch.setattr(QMenu,'exec',lambda *args:called.append(True))
+    current=window.selected().id
+    window.profile_menu(QPoint(10,window.profiles.viewport().height()-5))
+    assert not called and window.selected().id==current
+    monkeypatch.setattr(window,'confirm',lambda text:False)
+    menu=window.build_profile_menu(window.config.profiles[1].id)
+    next(a for a in menu.actions() if a.text()=='删除当前方案…').trigger()
+    assert len(window.config.profiles)==2
+
+def test_batch_remove_selected_persists_and_keeps_files_and_other_profiles(window,tmp_path,monkeypatch):
+    from PySide6.QtCore import Qt
+    from app.ui.batch_dialog import BatchApplicationDialog
+    profile=window.selected()
+    paths=[tmp_path/'第二项.exe',tmp_path/'第三项.exe']
+    for path in paths:path.touch()
+    profile.applications.extend(Application(path.stem,str(path)) for path in paths)
+    window.config.profiles[1].applications=[Application('另一个方案的程序',str(paths[0]))]
+    window.save();window.render()
+    dialog=BatchApplicationDialog(window,profile,window.remove_application_ids)
+    assert not dialog.remove_button.isEnabled()
+    dialog.check_all(True);assert len(dialog.checked_ids())==3
+    dialog.check_all(False);assert not dialog.checked_ids()
+    dialog.list.item(0).setCheckState(Qt.Checked);dialog.list.item(2).setCheckState(Qt.Checked)
+    confirmed=[];monkeypatch.setattr(dialog,'confirm_removal',lambda n:confirmed.append(n) or True)
+    dialog.remove_button.click()
+    restored=ConfigService(window.config.root)
+    assert confirmed==[2]
+    assert [a.name for a in restored.profiles[0].applications]==['第二项']
+    assert len(restored.profiles[1].applications)==1
+    assert all(path.exists() for path in paths)
+    assert dialog.list.count()==1 and not dialog.remove_button.isEnabled()
+
+
+def test_batch_confirmation_cancel_and_save_failure_keep_selection(window,monkeypatch):
+    from app.ui.batch_dialog import BatchApplicationDialog
+    profile=window.selected();before=[a.id for a in profile.applications]
+    dialog=BatchApplicationDialog(window,profile,window.remove_application_ids);dialog.check_all(True)
+    monkeypatch.setattr(dialog,'confirm_removal',lambda n:False)
+    dialog.remove_button.click();assert [a.id for a in profile.applications]==before
+    monkeypatch.setattr(dialog,'confirm_removal',lambda n:True)
+    monkeypatch.setattr(window,'save',lambda:False)
+    dialog.remove_button.click()
+    assert [a.id for a in profile.applications]==before
+    assert dialog.checked_ids()==before and '已保留' in dialog.result_label.text()
+
+
+def test_batch_remove_all_disables_empty_profile_actions(window,monkeypatch):
+    from app.ui.batch_dialog import BatchApplicationDialog
+    assert window.batch_button.isEnabled()
+    dialog=BatchApplicationDialog(window,window.selected(),window.remove_application_ids)
+    dialog.check_all(True);monkeypatch.setattr(dialog,'confirm_removal',lambda n:True)
+    dialog.remove_button.click()
+    assert not window.batch_button.isEnabled() and not window.launch_button.isEnabled()
+    assert dialog.list.count()==0 and not dialog.select_all.isEnabled()
+    assert not ConfigService(window.config.root).profiles[0].applications
+
+
+def test_batch_remove_does_not_change_running_snapshot(window):
+    from app.core.launcher import Target
+    profile=window.selected();profile.applications[0].launch_strategy='immediate'
+    snapshot=window.scheduler.reserve(profile)
+    identifier=profile.applications[0].id
+    assert window.remove_application_ids(profile.id,[identifier])
+    assert [a.id for a in snapshot.applications]==[identifier]
+    assert '原有快照' in window.status.text()
+    launched=[]
+    window.scheduler.resolve=lambda a:Target(a.path)
+    window.scheduler.monitor=lambda **kw:([],False)
+    window.scheduler.launch=lambda t:launched.append(t.path)
+    window.scheduler.run(snapshot)
+    assert len(launched)==1

@@ -34,12 +34,13 @@ def main():
                 if not profile:window.status.setText("指定方案不存在，请在设置中重新选择。");window.reveal();return
                 if autostart:
                     if window.pending or window.scheduler.active is not None:window.status.setText("当前已有方案正在启动或等待启动。");window.reveal();return
-                    window.pending=True;window.status.setText(f"开机方案将在 {config.settings['startup_delay']} 秒后启动，点击停止可取消。")
+                    window.pending=True;window.sync_launch_controls();window.status.setText(f"开机方案将在 {config.settings['startup_delay']} 秒后启动，点击“取消倒计时”可取消。")
                     window.pending_token+=1
                     token=window.pending_token
                     def execute():
                         if window.pending and token==window.pending_token:
                             window.pending=False
+                            window.sync_launch_controls()
                             current=next((p for p in config.profiles if p.id==profile_id),None)
                             window.start(current,scheduled=True)
                     QTimer.singleShot(config.settings["startup_delay"]*1000,execute)

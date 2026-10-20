@@ -84,3 +84,15 @@ def test_tcp_readiness():
     with socket.socket() as server:
         server.bind(('127.0.0.1',0));server.listen();a.readiness['port']=server.getsockname()[1];assert check(a,Target(a.path))
     assert not check(a,Target(a.path))
+
+@pytest.mark.parametrize('outcome',['completed','failed','stopped'])
+def test_finish_state_is_explicit(outcome):
+    def launcher(target):
+        if outcome=='failed':raise OSError('测试失败')
+    s,c,events=engine(launcher=launcher)
+    profile=s.reserve(Profile('结果',applications=[item()]))
+    if outcome=='stopped':s.cancel()
+    s.run(profile)
+    finished=[e for e in events if e[0]=='finished'][-1]
+    assert finished[1]==outcome
+    assert {'completed':'启动流程完成','failed':'有失败项','stopped':'启动流程已停止'}[outcome] in finished[2]

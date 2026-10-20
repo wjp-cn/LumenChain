@@ -76,6 +76,8 @@ class Scheduler:
                 self.emit("progress", str(i+1), str(len(apps)))
         finally:
             with self.lock: self.active = None
-            summary = f"流程结束：共 {len(apps)} 项；命令已提交 {counts['started']}，已跳过 {counts['skipped']}，失败 {counts['failed']}，未完成 {counts['cancelled']}；耗时 {time.monotonic()-start:.1f} 秒（提交与失败可能重叠）"
-            log.info(summary); self.emit("finished", "", summary)
+            outcome="stopped" if counts["cancelled"] or self.cancelled.is_set() else ("failed" if counts["failed"] else "completed")
+            title={"stopped":"启动流程已停止","failed":"启动流程结束（有失败项）","completed":"启动流程完成"}[outcome]
+            summary = f"{title}：共 {len(apps)} 项；命令已提交 {counts['started']}，已跳过 {counts['skipped']}，失败 {counts['failed']}，未完成 {counts['cancelled']}；耗时 {time.monotonic()-start:.1f} 秒（提交与失败可能重叠）"
+            log.info(summary); self.emit("finished", outcome, summary)
         return counts
