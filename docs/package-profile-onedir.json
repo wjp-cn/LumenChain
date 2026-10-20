@@ -1,0 +1,8 @@
+{
+  "exe": "G:\\github\\2026\\LumenChain\\dist\\LaunchFlow\\LaunchFlow.exe",
+  "profile_parameter": true,
+  "real_script": true,
+  "cross_profile_conflict_blocked": true,
+  "independent_tcp_readiness": true,
+  "clean_exit": true
+}
