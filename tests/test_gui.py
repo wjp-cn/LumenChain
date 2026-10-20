@@ -147,3 +147,118 @@ def test_drop_without_profile_and_save_failure(window,tmp_path,monkeypatch):
     asked=[];monkeypatch.setattr(window,'new_profile',lambda:asked.append(True))
     window.add_dropped_apps([str(program)])
     assert asked==[True] and window.selected() is None
+
+def test_compact_drag_preview_and_cancel(window,monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QDrag
+    item=window.apps.item(0)
+    item.setToolTip('应用名称非常长 '*20+'\nC:/app.exe')
+    preview=window.apps.drag_preview(item)
+    assert preview.width()/preview.devicePixelRatio()<=280
+    assert preview.height()/preview.devicePixelRatio()==38
+    assert preview.width()/preview.devicePixelRatio()<window.apps.viewport().width()
+    window.apps.setCurrentItem(item)
+    captured=[]
+    def cancel(drag,*args):
+        captured.append((drag.pixmap().size(),drag.hotSpot()))
+        return Qt.IgnoreAction
+    monkeypatch.setattr(QDrag,'exec',cancel)
+    before=[a.id for a in window.selected().applications]
+    window.apps.startDrag(Qt.MoveAction)
+    assert captured and captured[0][1].x()==20
+    assert [a.id for a in window.selected().applications]==before
+    assert window.apps._dragged_id is None and window.apps._drop_row is None
+    assert not window.apps._scroll_timer.isActive()
+
+
+def test_precise_internal_reorder_persists_and_keeps_selection(window,qt):
+    from PySide6.QtCore import QPointF, Qt
+    p=window.selected()
+    p.applications.extend([Application('第二项','C:/second.exe'),Application('第三项','C:/third.exe')])
+    window.render();qt.processEvents()
+    widget=window.apps
+    class InternalDrop:
+        def __init__(self,position):self.point=QPointF(position);self.accepted=False
+        def source(self):return widget
+        def position(self):return self.point
+        def setDropAction(self,action):assert action==Qt.MoveAction
+        def accept(self):self.accepted=True
+        def ignore(self):self.accepted=False
+    first=widget.item(0);first_id=first.data(Qt.UserRole)
+    widget._dragged_id=first_id
+    last_rect=widget.visualItemRect(widget.item(2))
+    drop=InternalDrop(last_rect.bottomLeft())
+    widget.dragMoveEvent(drop)
+    assert widget._drop_row==3
+    widget.dropEvent(drop)
+    assert drop.accepted and widget.currentItem().data(Qt.UserRole)==first_id
+    assert [a.name for a in ConfigService(window.config.root).profiles[0].applications]==['第二项','第三项','测试应用']
+    widget._dragged_id=first_id
+    drop=InternalDrop(widget.visualItemRect(widget.item(0)).topLeft())
+    widget.dropEvent(drop)
+    assert [a.name for a in ConfigService(window.config.root).profiles[0].applications]==['测试应用','第二项','第三项']
+    assert widget._drop_row is None
+
+
+def test_drag_noop_and_edge_scroll(window,qt):
+    from PySide6.QtCore import QPoint, Qt
+    p=window.selected();p.applications.extend(Application('应用'+str(i),'C:/app'+str(i)+'.exe') for i in range(25))
+    window.render();qt.processEvents();widget=window.apps
+    rect=widget.visualItemRect(widget.item(0))
+    assert widget.insertion_row(rect.topLeft())==0
+    assert widget.insertion_row(rect.bottomLeft())==1
+    original=widget.verticalScrollBar().value()
+    widget._drag_position=QPoint(20,widget.viewport().height()-2)
+    widget._scroll_direction=1;widget.scroll_drag()
+    assert widget.verticalScrollBar().value()>original
+    widget._drop_row=widget.count()
+    widget.viewport().update();qt.processEvents()
+
+def test_row_arrow_clicks_move_correct_application_and_save(window,qt):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    profile=window.selected()
+    profile.applications.extend([Application('第二项','C:/second.exe'),Application('第三项','C:/third.exe')])
+    window.render();qt.processEvents()
+    first_id=profile.applications[0].id;second_id=profile.applications[1].id
+    first_up,first_down=window.apps._row_buttons[first_id]
+    assert not first_up.isEnabled() and first_down.isEnabled()
+    assert not window.apps._row_buttons[profile.applications[-1].id][1].isEnabled()
+    # Click an unselected row: its own application must move, not the current selection.
+    window.apps.setCurrentRow(0)
+    QTest.mouseClick(window.apps._row_buttons[second_id][1],Qt.LeftButton);qt.processEvents()
+    assert [a.name for a in ConfigService(window.config.root).profiles[0].applications]==['测试应用','第三项','第二项']
+    assert window.apps.currentItem().data(Qt.UserRole)==second_id
+    assert not window.apps._row_buttons[second_id][1].isEnabled()
+    QTest.mouseClick(window.apps._row_buttons[second_id][0],Qt.LeftButton);qt.processEvents()
+    assert [a.name for a in ConfigService(window.config.root).profiles[0].applications]==['测试应用','第二项','第三项']
+
+
+def test_arrow_buttons_follow_reorder_scroll_resize_and_profile_switch(window,qt):
+    from PySide6.QtCore import Qt
+    profile=window.selected();profile.applications.extend(Application('应用'+str(i),'C:/app'+str(i)+'.exe') for i in range(20))
+    window.render();qt.processEvents()
+    identifier=profile.applications[0].id
+    item=window.apps.takeItem(0);window.apps.insertItem(2,item);window.reorder();qt.processEvents()
+    assert all(button.isEnabled() for button in window.apps._row_buttons[identifier])
+    last_id=profile.applications[-1].id
+    window.apps.scrollToBottom();qt.processEvents()
+    assert window.apps._row_buttons[last_id][0].isVisible()
+    assert not window.apps._row_buttons[profile.applications[0].id][0].isVisible()
+    window.resize(900,600);qt.processEvents()
+    button=window.apps._row_buttons[last_id][1]
+    assert button.geometry().right()<window.apps.viewport().width()
+    window.profiles.setCurrentRow(1);qt.processEvents()
+    assert window.apps._row_buttons=={}
+
+
+def test_arrow_single_item_disabled_and_save_failure_rolls_back(window,qt,monkeypatch):
+    from PySide6.QtCore import Qt
+    identifier=window.selected().applications[0].id
+    assert not any(button.isEnabled() for button in window.apps._row_buttons[identifier])
+    window.selected().applications.append(Application('第二项','C:/second.exe'));window.render();qt.processEvents()
+    before=[a.id for a in window.selected().applications]
+    monkeypatch.setattr(window,'save',lambda:False)
+    window.apps._row_buttons[identifier][1].click();qt.processEvents()
+    assert [a.id for a in window.selected().applications]==before
+    assert window.apps.item(0).data(Qt.UserRole)==identifier

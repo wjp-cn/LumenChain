@@ -1,7 +1,7 @@
 import json, copy, threading, os
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal, QObject, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QIcon
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QUrl, QPoint, QRectF
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QDrag, QPixmap, QPainter, QColor, QPen
 from PySide6.QtWidgets import *
 from app.models.profile import Application, Profile, now
 from app.core.scheduler import Scheduler
@@ -10,9 +10,175 @@ from app.ui.settings_dialog import SettingsDialog
 
 class Bridge(QObject):
     event=Signal(str,str,str)
+
+class ApplicationDelegate(QStyledItemDelegate):
+    def paint(self,painter,option,index):
+        option=QStyleOptionViewItem(option)
+        self.initStyleOption(option,index)
+        available=max(20,option.rect.width()-116)
+        option.text="\n".join(option.fontMetrics.elidedText(line,Qt.ElideRight,available) for line in option.text.split("\n"))
+        option.widget.style().drawControl(QStyle.CE_ItemViewItem,option,painter,option.widget)
+
 class ApplicationList(QListWidget):
     reordered=Signal()
     filesDropped=Signal(list)
+    moveRequested=Signal(str,int)
+
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self._dragged_id=None
+        self._drop_row=None
+        self._drag_position=None
+        self._scroll_direction=0
+        self._scroll_timer=QTimer(self)
+        self._scroll_timer.setInterval(80)
+        self._scroll_timer.timeout.connect(self.scroll_drag)
+        self._row_buttons={}
+        self._buttons_pending=False
+        self.setItemDelegate(ApplicationDelegate(self))
+        for signal in (self.model().rowsInserted,self.model().rowsRemoved,self.model().rowsMoved,self.model().modelReset,self.model().dataChanged):
+            signal.connect(self.schedule_row_buttons)
+        self.verticalScrollBar().valueChanged.connect(self.position_row_buttons)
+
+    def schedule_row_buttons(self,*_):
+        if not self._buttons_pending:
+            self._buttons_pending=True
+            QTimer.singleShot(0,self.sync_row_buttons)
+
+    def sync_row_buttons(self):
+        self._buttons_pending=False
+        identifiers=set()
+        for row in range(self.count()):
+            item=self.item(row)
+            identifier=item.data(Qt.UserRole)
+            if not identifier:
+                continue
+            identifiers.add(identifier)
+            if identifier not in self._row_buttons:
+                buttons=[]
+                for delta,label,symbol in ((-1,"上移","↑"),(1,"下移","↓")):
+                    button=QToolButton(self.viewport())
+                    button.setText(symbol)
+                    button.setFixedSize(28,28)
+                    button.setFocusPolicy(Qt.StrongFocus)
+                    button.setCursor(Qt.PointingHandCursor)
+                    button.setStyleSheet("QToolButton {color:#487dbb;background:transparent;border:1px solid transparent;border-radius:5px;font-size:18px;} QToolButton:hover {background:#e2eeff;border-color:#b9d3f4;} QToolButton:pressed {background:#c9defb;} QToolButton:disabled {color:#aab5c3;} QToolButton:focus {border-color:#528ce0;}")
+                    button.clicked.connect(lambda checked=False,identifier=identifier,delta=delta:self.moveRequested.emit(identifier,delta))
+                    buttons.append(button)
+                self._row_buttons[identifier]=buttons
+            name=item.toolTip().split("\n",1)[0]
+            up,down=self._row_buttons[identifier]
+            for button,label,enabled in ((up,"上移",row>0),(down,"下移",row<self.count()-1)):
+                button.setEnabled(enabled)
+                button.setToolTip(label)
+                button.setAccessibleName(label+" "+name)
+        for identifier in list(self._row_buttons):
+            if identifier not in identifiers:
+                for button in self._row_buttons.pop(identifier):
+                    button.hide()
+                    button.deleteLater()
+        self.position_row_buttons()
+
+    def position_row_buttons(self,*_):
+        for row in range(self.count()):
+            item=self.item(row)
+            buttons=self._row_buttons.get(item.data(Qt.UserRole))
+            if not buttons:
+                continue
+            rect=self.visualItemRect(item)
+            visible=rect.intersects(self.viewport().rect())
+            for offset,button in enumerate(buttons):
+                button.move(self.viewport().width()-72+offset*32,rect.center().y()-14)
+                button.setVisible(visible)
+                button.raise_()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        self.position_row_buttons()
+
+    def scroll_drag(self):
+        bar=self.verticalScrollBar()
+        bar.setValue(bar.value()+self._scroll_direction*max(1,bar.singleStep()))
+        if self._drag_position is not None:
+            self._drop_row=self.insertion_row(self._drag_position)
+            self.viewport().update()
+
+    def drag_preview(self,item):
+        """A compact, DPI-aware chip instead of Qt's full-width row snapshot."""
+        name=item.toolTip().split("\n",1)[0] or item.text().split("\n",1)[0].lstrip("≡ ")
+        metrics=self.fontMetrics()
+        name=metrics.elidedText(name,Qt.ElideRight,220)
+        width=min(280,max(120,metrics.horizontalAdvance(name)+54))
+        height=38
+        ratio=self.devicePixelRatioF()
+        pixmap=QPixmap(round(width*ratio),round(height*ratio))
+        pixmap.setDevicePixelRatio(ratio)
+        pixmap.fill(Qt.transparent)
+        painter=QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        dark=self.palette().base().color().lightness()<128
+        painter.setPen(QPen(QColor("#528ce0"),1))
+        painter.setBrush(QColor("#26364d" if dark else "#f0f6ff"))
+        painter.drawRoundedRect(QRectF(.5,.5,width-1,height-1),8,8)
+        icon=item.icon() if not item.icon().isNull() else self.style().standardIcon(QStyle.SP_FileIcon)
+        icon.paint(painter,12,11,16,16)
+        painter.setFont(self.font())
+        painter.setPen(QColor("#eef4ff" if dark else "#15365d"))
+        painter.drawText(38,0,width-48,height,Qt.AlignVCenter|Qt.AlignLeft,name)
+        painter.end()
+        return pixmap
+
+    def startDrag(self,supportedActions):
+        item=self.currentItem()
+        if item is None:
+            return
+        self._dragged_id=item.data(Qt.UserRole)
+        drag=QDrag(self)
+        drag.setMimeData(self.mimeData([item]))
+        drag.setPixmap(self.drag_preview(item))
+        drag.setHotSpot(QPoint(20,19))
+        try:
+            drag.exec(Qt.MoveAction,Qt.MoveAction)
+        finally:
+            self._scroll_timer.stop()
+            self._dragged_id=None
+            self._drop_row=None
+            self.viewport().update()
+            drag.deleteLater()
+
+    def insertion_row(self,position):
+        index=self.indexAt(position)
+        if not index.isValid():
+            if self.count() and position.y()<self.visualItemRect(self.item(0)).top():
+                return 0
+            return self.count()
+        rect=self.visualRect(index)
+        return index.row()+(position.y()>=rect.center().y())
+
+    def paintEvent(self,event):
+        super().paintEvent(event)
+        if self._drop_row is None:
+            return
+        if self._drop_row<self.count():
+            y=self.visualItemRect(self.item(self._drop_row)).top()
+        elif self.count():
+            y=self.visualItemRect(self.item(self.count()-1)).bottom()+1
+        else:
+            y=3
+        y=max(2,min(y,self.viewport().height()-3))
+        painter=QPainter(self.viewport())
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#347fe4"),2,Qt.SolidLine,Qt.RoundCap))
+        painter.drawLine(9,y,self.viewport().width()-10,y)
+        painter.setBrush(QColor("#347fe4"))
+        painter.drawEllipse(QPoint(9,y),3,3)
+        painter.end()
+
+    def dragLeaveEvent(self,event):
+        self._scroll_timer.stop()
+        self._drop_row=None
+        self.viewport().update()
+        super().dragLeaveEvent(event)
 
     @staticmethod
     def local_applications(mime):
@@ -23,6 +189,10 @@ class ApplicationList(QListWidget):
                 and Path(url.toLocalFile()).suffix.lower() in (".exe", ".lnk", ".bat", ".cmd")]
 
     def dragEnterEvent(self,event):
+        if event.source() is self and self._dragged_id is not None:
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+            return
         if event.mimeData().hasUrls():
             if self.local_applications(event.mimeData()):
                 event.setDropAction(Qt.CopyAction)
@@ -33,6 +203,19 @@ class ApplicationList(QListWidget):
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self,event):
+        if event.source() is self and self._dragged_id is not None:
+            self._drag_position=event.position().toPoint()
+            self._drop_row=self.insertion_row(self._drag_position)
+            y=self._drag_position.y()
+            self._scroll_direction=-1 if y<24 else (1 if y>self.viewport().height()-24 else 0)
+            if self._scroll_direction:
+                self._scroll_timer.start()
+            else:
+                self._scroll_timer.stop()
+            self.viewport().update()
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+            return
         if event.mimeData().hasUrls():
             if self.local_applications(event.mimeData()):
                 event.setDropAction(Qt.CopyAction)
@@ -43,6 +226,24 @@ class ApplicationList(QListWidget):
         super().dragMoveEvent(event)
 
     def dropEvent(self,event):
+        if event.source() is self and self._dragged_id is not None:
+            self._scroll_timer.stop()
+            destination=self.insertion_row(event.position().toPoint())
+            source=next((i for i in range(self.count()) if self.item(i).data(Qt.UserRole)==self._dragged_id),None)
+            self._drop_row=None
+            if source is not None:
+                destination-=source<destination
+                if source!=destination:
+                    item=self.takeItem(source)
+                    self.insertItem(destination,item)
+                    self.setCurrentItem(item)
+                    self.reordered.emit()
+                event.setDropAction(Qt.MoveAction)
+                event.accept()
+            else:
+                event.ignore()
+            self.viewport().update()
+            return
         if event.mimeData().hasUrls():
             paths=self.local_applications(event.mimeData())
             if paths:
@@ -70,8 +271,9 @@ class MainWindow(QMainWindow):
         row=QHBoxLayout(); work.addLayout(row)
         for label,fn in (("添加软件",self.add_app),("方案操作",self.profile_menu),("数据管理",self.data_menu)):
             b=QPushButton(label); b.clicked.connect(fn); row.addWidget(b)
-        self.apps=ApplicationList(); self.apps.setDragDropMode(QAbstractItemView.DragDrop); self.apps.setDefaultDropAction(Qt.MoveAction); self.apps.setDropIndicatorShown(True); self.apps.filesDropped.connect(self.add_dropped_apps); self.apps.reordered.connect(self.reorder); self.apps.itemDoubleClicked.connect(lambda _:self.edit_app()); self.apps.setContextMenuPolicy(Qt.CustomContextMenu); self.apps.customContextMenuRequested.connect(self.app_menu); work.addWidget(self.apps)
+        self.apps=ApplicationList(); self.apps.setDragDropMode(QAbstractItemView.DragDrop); self.apps.setDefaultDropAction(Qt.MoveAction); self.apps.setDropIndicatorShown(False); self.apps.filesDropped.connect(self.add_dropped_apps); self.apps.reordered.connect(self.reorder); self.apps.itemDoubleClicked.connect(lambda _:self.edit_app()); self.apps.setContextMenuPolicy(Qt.CustomContextMenu); self.apps.customContextMenuRequested.connect(self.app_menu); work.addWidget(self.apps)
         self.apps.setToolTip("将桌面或资源管理器中的 EXE、LNK、BAT、CMD 拖入此处添加；列表内拖动可调整顺序。")
+        self.apps.moveRequested.connect(self.move_application)
         self.status=QLabel("创建方案并添加软件，即可一键启动。"); self.status.setWordWrap(True); work.addWidget(self.status); self.progress=QProgressBar(); self.progress.setRange(0,1); self.progress.setValue(0); work.addWidget(self.progress)
         buttons=QHBoxLayout(); work.addLayout(buttons)
         for label,fn in (("一键启动",lambda:self.start(self.selected())),("停止启动",self.cancel),("查看日志",self.logs)):
@@ -102,6 +304,7 @@ class MainWindow(QMainWindow):
                 from PySide6.QtCore import QFileInfo
                 item.setIcon(QFileIconProvider().icon(QFileInfo(a.path))); self.apps.addItem(item)
             if not p.applications: self.description.setText("将应用图标拖入下方列表，或点击“添加软件”；支持 EXE、LNK、BAT、CMD。")
+        self.apps.sync_row_buttons()
     def new_profile(self):
         name,ok=QInputDialog.getText(self,"新建方案","方案名称")
         if ok and name.strip():
@@ -207,11 +410,31 @@ class MainWindow(QMainWindow):
             self.start(Profile("单独启动："+a.name,applications=[a]))
     def move(self,delta):
         p=self.selected(); i=self.apps.currentRow(); j=i+delta
-        if 0<=j<len(p.applications):p.applications[i],p.applications[j]=p.applications[j],p.applications[i]; self.save(); self.render(); self.apps.setCurrentRow(j)
+        if not p or i<0 or not 0<=j<len(p.applications):
+            return
+        scroll=self.apps.verticalScrollBar().value()
+        modified=p.modified_at
+        p.applications[i],p.applications[j]=p.applications[j],p.applications[i]
+        p.modified_at=now()
+        if not self.save():
+            p.applications[i],p.applications[j]=p.applications[j],p.applications[i]
+            p.modified_at=modified
+            return
+        self.render()
+        self.apps.setCurrentRow(j)
+        self.apps.verticalScrollBar().setValue(scroll)
+        self.apps.scrollToItem(self.apps.item(j))
+
+    def move_application(self,identifier,delta):
+        row=next((i for i in range(self.apps.count()) if self.apps.item(i).data(Qt.UserRole)==identifier),None)
+        if row is not None:
+            self.apps.setCurrentRow(row)
+            self.move(delta)
     def reorder(self):
         p=self.selected()
         if p:
             lookup={a.id:a for a in p.applications}; p.applications=[lookup[self.apps.item(i).data(Qt.UserRole)] for i in range(self.apps.count())]; p.modified_at=now(); self.save()
+            self.apps.sync_row_buttons()
     def toggle(self):
         a=self.app()
         if a:a.enabled=not a.enabled;self.save();self.render()

@@ -15,7 +15,7 @@ class SettingsDialog(QDialog):
             w=QSpinBox(); w.setRange(lo,hi); w.setValue(config.settings[key]); self.fields[key]=w; form.addRow(label,w)
         self.failure=QComboBox(); self.failure.addItems(["跳过并继续","停止整个队列","重试后继续"]); self.failure.setCurrentIndex(["continue","stop","retry"].index(config.settings["default_failure"])); form.addRow("默认失败处理",self.failure)
         self.theme=QComboBox(); self.theme.addItems(["浅色","深色","跟随系统"]); self.theme.setCurrentIndex(["light","dark","system"].index(config.settings["theme"])); form.addRow("外观",self.theme)
-        label=QLabel("光启 LumenChain 1.1.0\n一次编排，一键启动。\nPython（PSF 许可） / PySide6（LGPLv3） / psutil（BSD）\n项目仅限非商业使用，见 LICENSE；第三方许可见 THIRD_PARTY_NOTICES.md。"); label.setWordWrap(True); layout.addWidget(label)
+        label=QLabel("光启 LumenChain 1.1.2\n一次编排，一键启动。\nPython（PSF 许可） / PySide6（LGPLv3） / psutil（BSD）\n项目仅限非商业使用，见 LICENSE；第三方许可见 THIRD_PARTY_NOTICES.md。"); label.setWordWrap(True); layout.addWidget(label)
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel); buttons.button(QDialogButtonBox.Save).setText("保存"); buttons.button(QDialogButtonBox.Cancel).setText("取消"); buttons.accepted.connect(self.save); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
     def save(self):
         old=copy.deepcopy(self.config.settings); new=copy.deepcopy(old)
