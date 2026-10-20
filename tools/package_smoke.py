@@ -18,7 +18,7 @@ def windows(pid):
         p=wintypes.DWORD();user.GetWindowThreadProcessId(hwnd,ctypes.byref(p))
         if p.value in pids:
             title=ctypes.create_unicode_buffer(1024);user.GetWindowTextW(hwnd,title,len(title))
-            if 'LaunchFlow' in title.value:found.append((hwnd,bool(user.IsWindowVisible(hwnd))))
+            if 'LumenChain' in title.value:found.append((hwnd,bool(user.IsWindowVisible(hwnd))))
         return True
     user.EnumWindows(visit,0);return found
 with tempfile.TemporaryDirectory() as root:
@@ -40,6 +40,6 @@ with tempfile.TemporaryDirectory() as root:
         log=Path(root)/'LaunchFlow/logs/launchflow.log';assert log.exists()
         assert 'ERROR' not in log.read_text(encoding='utf-8')
         result=dict(exe=str(exe),hidden_start=True,second_instance_restore=True,clean_exit=True,external_working_directory=True,elapsed=round(time.monotonic()-started,2))
-        Path('docs/package-smoke-'+('onefile' if exe.parent.name=='dist' else 'onedir')+'.json').write_text(json.dumps(result,indent=2),encoding='utf-8');print(json.dumps(result))
+        Path('docs/package-smoke-'+('onedir' if exe.parent.name=='LaunchFlow' else 'onefile')+'.json').write_text(json.dumps(result,indent=2),encoding='utf-8');print(json.dumps(result))
     finally:
         if first.poll() is None:first.terminate();first.wait(timeout=5)

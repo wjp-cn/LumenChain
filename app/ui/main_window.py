@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import *
-from app.models.profile import Profile, now
+from app.models.profile import Application, Profile, now
 from app.core.scheduler import Scheduler
 from app.ui.application_dialog import ApplicationDialog
 from app.ui.settings_dialog import SettingsDialog
@@ -12,16 +12,57 @@ class Bridge(QObject):
     event=Signal(str,str,str)
 class ApplicationList(QListWidget):
     reordered=Signal()
+    filesDropped=Signal(list)
+
+    @staticmethod
+    def local_applications(mime):
+        if not mime.hasUrls():
+            return []
+        return [url.toLocalFile() for url in mime.urls()
+                if url.isLocalFile() and Path(url.toLocalFile()).is_file()
+                and Path(url.toLocalFile()).suffix.lower() in (".exe", ".lnk", ".bat", ".cmd")]
+
+    def dragEnterEvent(self,event):
+        if event.mimeData().hasUrls():
+            if self.local_applications(event.mimeData()):
+                event.setDropAction(Qt.CopyAction)
+                event.accept()
+            else:
+                event.ignore()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self,event):
+        if event.mimeData().hasUrls():
+            if self.local_applications(event.mimeData()):
+                event.setDropAction(Qt.CopyAction)
+                event.accept()
+            else:
+                event.ignore()
+            return
+        super().dragMoveEvent(event)
+
     def dropEvent(self,event):
-        super().dropEvent(event); self.reordered.emit()
+        if event.mimeData().hasUrls():
+            paths=self.local_applications(event.mimeData())
+            if paths:
+                event.setDropAction(Qt.CopyAction)
+                event.accept()
+                self.filesDropped.emit(paths)
+            else:
+                event.ignore()
+            return
+        super().dropEvent(event)
+        if event.isAccepted():
+            self.reordered.emit()
 
 class MainWindow(QMainWindow):
     def __init__(self,config):
-        super().__init__(); self.config=config; self.setWindowTitle("启动编排器 · LaunchFlow"); self.resize(1080,720); self.setMinimumSize(850,560)
+        super().__init__(); self.config=config; self.setWindowTitle("光启 LumenChain"); self.resize(1080,720); self.setMinimumSize(850,560)
         self.bridge=Bridge(); self.bridge.event.connect(self.on_scheduler_event); self.scheduler=Scheduler(self.bridge.event.emit); self.thread=None; self.exiting=False; self.pending=False; self.pending_token=0
         self.setWindowIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root)
-        sidebar=QVBoxLayout(); outer.addLayout(sidebar,1); sidebar.addWidget(QLabel("启动编排器\n一次编排，一键启动。")); self.profiles=QListWidget(); sidebar.addWidget(self.profiles)
+        sidebar=QVBoxLayout(); outer.addLayout(sidebar,1); sidebar.addWidget(QLabel("光启 LumenChain\n一次编排，一键启动。")); self.profiles=QListWidget(); sidebar.addWidget(self.profiles)
         self.profiles.currentRowChanged.connect(self.render)
         for label,fn in (("＋ 新建方案",self.new_profile),("设置",self.settings)):
             b=QPushButton(label); b.clicked.connect(fn); sidebar.addWidget(b)
@@ -29,13 +70,14 @@ class MainWindow(QMainWindow):
         row=QHBoxLayout(); work.addLayout(row)
         for label,fn in (("添加软件",self.add_app),("方案操作",self.profile_menu),("数据管理",self.data_menu)):
             b=QPushButton(label); b.clicked.connect(fn); row.addWidget(b)
-        self.apps=ApplicationList(); self.apps.setDragDropMode(QAbstractItemView.InternalMove); self.apps.setDefaultDropAction(Qt.MoveAction); self.apps.reordered.connect(self.reorder); self.apps.itemDoubleClicked.connect(lambda _:self.edit_app()); self.apps.setContextMenuPolicy(Qt.CustomContextMenu); self.apps.customContextMenuRequested.connect(self.app_menu); work.addWidget(self.apps)
+        self.apps=ApplicationList(); self.apps.setDragDropMode(QAbstractItemView.DragDrop); self.apps.setDefaultDropAction(Qt.MoveAction); self.apps.setDropIndicatorShown(True); self.apps.filesDropped.connect(self.add_dropped_apps); self.apps.reordered.connect(self.reorder); self.apps.itemDoubleClicked.connect(lambda _:self.edit_app()); self.apps.setContextMenuPolicy(Qt.CustomContextMenu); self.apps.customContextMenuRequested.connect(self.app_menu); work.addWidget(self.apps)
+        self.apps.setToolTip("将桌面或资源管理器中的 EXE、LNK、BAT、CMD 拖入此处添加；列表内拖动可调整顺序。")
         self.status=QLabel("创建方案并添加软件，即可一键启动。"); self.status.setWordWrap(True); work.addWidget(self.status); self.progress=QProgressBar(); self.progress.setRange(0,1); self.progress.setValue(0); work.addWidget(self.progress)
         buttons=QHBoxLayout(); work.addLayout(buttons)
         for label,fn in (("一键启动",lambda:self.start(self.selected())),("停止启动",self.cancel),("查看日志",self.logs)):
             b=QPushButton(label); b.clicked.connect(fn); buttons.addWidget(b)
         self.tray=QSystemTrayIcon(self.windowIcon(),self); self.tray.activated.connect(lambda reason:self.reveal() if reason in (QSystemTrayIcon.DoubleClick,QSystemTrayIcon.Trigger) else None)
-        self.tray.setToolTip("启动编排器"); self.tray.show(); self.refresh(); self.theme()
+        self.tray.setToolTip("光启 LumenChain"); self.tray.show(); self.refresh(); self.theme()
         QApplication.styleHints().colorSchemeChanged.connect(lambda _:self.theme())
     def selected(self):
         row=self.profiles.currentRow(); return self.config.profiles[row] if 0<=row<len(self.config.profiles) else None
@@ -51,7 +93,7 @@ class MainWindow(QMainWindow):
     def render(self,*_):
         p=self.selected(); self.apps.clear()
         self.title.setText(p.name if p else "还没有启动方案")
-        self.description.setText((p.description + f" · {len(p.applications)} 个软件 · ≡ 拖拽排序 / 右键操作") if p else "创建一个启动方案，把每天需要打开的软件交给启动编排器。")
+        self.description.setText((p.description + f" · {len(p.applications)} 个软件 · 拖入应用添加 / ≡ 拖拽排序 / 右键操作") if p else "创建启动方案，或将应用快捷方式拖入下方列表开始添加。")
         if p:
             for a in p.applications:
                 strategy={"immediate":"立即继续","delay":f"延迟 {a.delay_seconds:g} 秒","ready":"等待就绪 · "+a.readiness["kind"]}[a.launch_strategy]
@@ -59,7 +101,7 @@ class MainWindow(QMainWindow):
                 item=QListWidgetItem(text); item.setData(Qt.UserRole,a.id); item.setToolTip(a.name+"\n"+a.path)
                 from PySide6.QtCore import QFileInfo
                 item.setIcon(QFileIconProvider().icon(QFileInfo(a.path))); self.apps.addItem(item)
-            if not p.applications: self.description.setText("这个方案还没有软件，点击“添加软件”，拖拽调整启动顺序。")
+            if not p.applications: self.description.setText("将应用图标拖入下方列表，或点击“添加软件”；支持 EXE、LNK、BAT、CMD。")
     def new_profile(self):
         name,ok=QInputDialog.getText(self,"新建方案","方案名称")
         if ok and name.strip():
@@ -93,6 +135,56 @@ class MainWindow(QMainWindow):
         dialog=ApplicationDialog(self,settings=self.config.settings)
         if dialog.exec():
             p.applications.append(dialog.application); p.modified_at=now(); self.save(); self.render(); self.apps.setCurrentRow(self.apps.count()-1); self.apps.scrollToBottom(); self.apps.currentItem().setBackground(__import__("PySide6.QtGui",fromlist=["QColor"]).QColor("#d4e5ff")); QTimer.singleShot(1600,self.render)
+
+    def add_dropped_apps(self,paths):
+        profile=self.selected()
+        if profile is None:
+            self.new_profile()
+            profile=self.selected()
+        if profile is None:
+            return
+        settings=self.config.settings
+        existing={os.path.normcase(os.path.realpath(os.path.expandvars(a.path))) for a in profile.applications}
+        added=[]
+        skipped=0
+        for filename in paths:
+            path=Path(filename)
+            normalized=os.path.normcase(os.path.realpath(filename))
+            if not path.is_file() or path.suffix.lower() not in (".exe", ".lnk", ".bat", ".cmd") or normalized in existing:
+                skipped+=1
+                continue
+            application=Application(
+                path.stem, str(path),
+                working_directory="" if path.suffix.lower()==".lnk" else str(path.parent),
+                delay_seconds=settings["default_delay"],
+                skip_if_running=settings["default_skip"],
+                failure_action=settings["default_failure"],
+                retry_count=settings["default_retry"],
+            )
+            application.readiness["timeout"]=settings["default_timeout"]
+            application.validate()
+            added.append(application)
+            existing.add(normalized)
+        if added:
+            previous_modified=profile.modified_at
+            profile.applications.extend(added)
+            profile.modified_at=now()
+            if not self.save():
+                del profile.applications[-len(added):]
+                profile.modified_at=previous_modified
+                return
+            self.render()
+            self.apps.setCurrentRow(self.apps.count()-1)
+            self.apps.scrollToBottom()
+        message=f"已添加 {len(added)} 个应用"
+        if skipped:
+            message+=f"，跳过 {skipped} 个重复或无效文件"
+        message+="；双击条目可编辑参数和启动策略。"
+        if any(Path(a.path).suffix.lower() in (".bat", ".cmd") for a in added):
+            message+=" BAT/CMD 会执行脚本，请仅启动可信文件。"
+        if self.scheduler.active is not None:
+            message+=" 当前启动使用原有快照，新增项下次生效。"
+        self.status.setText(message)
     def app(self):
         p=self.selected(); row=self.apps.currentRow()
         return p.applications[row] if p and 0<=row<len(p.applications) else None

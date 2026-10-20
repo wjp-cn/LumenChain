@@ -75,3 +75,75 @@ def test_settings_persistence_without_registry_write(window,monkeypatch):
     writes=[];monkeypatch.setattr(startup_manager,'set_enabled',lambda enabled:writes.append(enabled))
     d=SettingsDialog(window,window.config);d.fields['default_delay'].setValue(7);d.theme.setCurrentIndex(1);d.save()
     restored=ConfigService(window.config.root);assert restored.settings['default_delay']==7 and restored.settings['theme']=='dark';assert not writes
+
+def send_file_drop(widget, urls):
+    from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt
+    from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+    mime=QMimeData();mime.setUrls(urls)
+    enter=QDragEnterEvent(QPoint(20,20),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+    QApplication.sendEvent(widget.viewport(),enter)
+    if not enter.isAccepted():return False
+    move=QDragMoveEvent(QPoint(20,20),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+    QApplication.sendEvent(widget.viewport(),move)
+    assert move.isAccepted()
+    drop=QDropEvent(QPointF(20,20),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+    QApplication.sendEvent(widget.viewport(),drop)
+    return drop.isAccepted()
+
+
+def test_external_drop_adds_multiple_and_persists_without_launch(window,tmp_path):
+    from PySide6.QtCore import QUrl
+    paths=[tmp_path/'中文 应用.exe',tmp_path/'桌面 快捷方式.LNK',tmp_path/'可信脚本.cmd']
+    for path in paths:path.touch()
+    window.config.settings['default_delay']=7
+    window.scheduler.launch=lambda target:pytest.fail('dropping a file must never execute it')
+    assert send_file_drop(window.apps,[QUrl.fromLocalFile(str(p)) for p in paths])
+    restored=ConfigService(window.config.root);apps=restored.profiles[0].applications
+    assert len(apps)==4
+    assert [a.name for a in apps[-3:]]==[p.stem for p in paths]
+    assert all(a.delay_seconds==7 for a in apps[-3:])
+    assert apps[-2].working_directory==''
+    assert apps[-1].working_directory==str(tmp_path)
+    assert window.apps.currentRow()==3 and window.scheduler.active is None
+    assert window.windowTitle()=='光启 LumenChain' and window.tray.toolTip()=='光启 LumenChain'
+
+
+def test_external_drop_duplicates_skipped(window,tmp_path):
+    from PySide6.QtCore import QUrl
+    path=tmp_path/'应用.exe';path.touch();url=QUrl.fromLocalFile(str(path))
+    assert send_file_drop(window.apps,[url,url])
+    assert len(window.selected().applications)==2
+    assert send_file_drop(window.apps,[url])
+    assert len(ConfigService(window.config.root).profiles[0].applications)==2
+    assert '重复或无效文件' in window.status.text()
+
+
+def test_external_drop_rejects_non_programs_and_remote_urls(window,tmp_path):
+    from PySide6.QtCore import QUrl
+    text=tmp_path/'文本.txt';text.touch()
+    assert not send_file_drop(window.apps,[QUrl.fromLocalFile(str(text))])
+    assert not send_file_drop(window.apps,[QUrl.fromLocalFile(str(tmp_path))])
+    assert not send_file_drop(window.apps,[QUrl('https://example.com/app.exe')])
+    assert len(window.selected().applications)==1
+
+
+def test_external_drop_mixed_files_and_profile_switch(window,tmp_path):
+    from PySide6.QtCore import QUrl
+    program=tmp_path/'应用.bat';program.touch();text=tmp_path/'文件.txt';text.touch()
+    window.profiles.setCurrentRow(1)
+    assert send_file_drop(window.apps,[QUrl.fromLocalFile(str(text)),QUrl.fromLocalFile(str(program))])
+    assert len(window.config.profiles[0].applications)==1
+    assert len(window.config.profiles[1].applications)==1
+    assert window.config.profiles[1].applications[0].path==str(program)
+
+
+def test_drop_without_profile_and_save_failure(window,tmp_path,monkeypatch):
+    program=tmp_path/'应用.exe';program.touch()
+    original=list(window.selected().applications)
+    monkeypatch.setattr(window,'save',lambda:False)
+    window.add_dropped_apps([str(program)])
+    assert window.selected().applications==original
+    window.config.profiles=[];window.refresh()
+    asked=[];monkeypatch.setattr(window,'new_profile',lambda:asked.append(True))
+    window.add_dropped_apps([str(program)])
+    assert asked==[True] and window.selected() is None

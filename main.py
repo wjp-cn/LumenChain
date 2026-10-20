@@ -3,13 +3,13 @@ from app.services.config_service import ConfigService
 from app.services.log_service import setup
 
 def main():
-    parser=argparse.ArgumentParser(description="启动编排器")
+    parser=argparse.ArgumentParser(description="光启 LumenChain")
     parser.add_argument("--autostart",action="store_true");parser.add_argument("--profile");parser.add_argument("--minimized",action="store_true");parser.add_argument("--smoke-test",action="store_true",help=argparse.SUPPRESS)
     parser.add_argument("--smoke-timeout",type=int,default=5000,help=argparse.SUPPRESS)
     args=parser.parse_args()
     from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
     from PySide6.QtCore import QTimer, QTranslator, QLibraryInfo, QLocale
-    app=QApplication(sys.argv);app.setApplicationName("LaunchFlow");app.setQuitOnLastWindowClosed(False)
+    app=QApplication(sys.argv);app.setApplicationName("LaunchFlow");app.setApplicationDisplayName("光启 LumenChain");app.setQuitOnLastWindowClosed(False)
     translator=QTranslator(app)
     QLocale.setDefault(QLocale("zh_CN"))
     translator.load("qtbase_zh_CN",QLibraryInfo.path(QLibraryInfo.TranslationsPath))

@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory() as directory, socket.socket() as server:
         text=(data/'logs/launchflow.log').read_text(encoding='utf-8');assert 'ERROR' not in text,text
         assert not second_output.exists()
         result=dict(exe=str(exe),profile_parameter=True,real_script=True,cross_profile_conflict_blocked=True,independent_tcp_readiness=True,clean_exit=True)
-        suffix='onefile' if exe.parent.name=='dist' else 'onedir'
+        suffix='onedir' if exe.parent.name=='LaunchFlow' else 'onefile'
         Path('docs/package-profile-'+suffix+'.json').write_text(json.dumps(result,indent=2),encoding='utf-8');print(json.dumps(result))
     finally:
         if first.poll() is None:first.terminate();first.wait(timeout=5)

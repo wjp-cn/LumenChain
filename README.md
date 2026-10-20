@@ -1,6 +1,8 @@
-# 启动编排器 LaunchFlow
+# 光启 LumenChain
 
 原生 Windows 桌面应用：一次编排，一键启动。Python 3.11+、PySide6、Qt Widgets，无账号、数据库或运行时联网要求。
+
+支持从桌面或资源管理器把应用图标拖入软件列表，直接添加 EXE、LNK 快捷方式、BAT、CMD，也可一次拖入多个文件。添加后自动保存，不会立即执行；重复路径自动跳过，双击条目可进一步设置参数与就绪条件。尚未创建方案时会先提示创建。为兼容已有配置和开机启动设置，目前 EXE 文件名及 AppData 数据目录继续使用 LaunchFlow。
 
 ## 许可：仅限非商业用途
 
@@ -12,7 +14,7 @@
 
 ## 直接使用
 
-当前构建：`dist/LaunchFlow/LaunchFlow.exe`。请复制整个 `dist/LaunchFlow` 目录，保留 `_internal`，不能只复制其中的 EXE。双击运行，无需安装 Python。
+当前 1.1.0 构建：`dist/1.1.0/LaunchFlow/LaunchFlow.exe`，单文件版为 `dist/1.1.0/LaunchFlow.exe`。退出旧版后再打开新版，已有方案会继续保留。请复制整个 `dist/1.1.0/LaunchFlow` 目录，保留 `_internal`，不能只复制其中的 EXE。双击运行，无需安装 Python。
 
 首次运行为空白方案库，不会自动启动任何第三方程序。新建方案后点击“添加软件”，选择 EXE、LNK、BAT 或 CMD。编辑弹窗可填写参数、工作目录、就绪条件与失败策略。双击条目编辑；右键可单独启动、移动、启用、删除；拖动列表调整顺序，立即保存。方案操作菜单支持复制、重命名、描述、默认方案及删除。
 
